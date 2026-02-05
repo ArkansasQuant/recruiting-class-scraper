@@ -23,7 +23,8 @@ on:
 
 jobs:
   scrape:
-    runs-on: ubuntu-latest
+    # --- CHANGED FROM ubuntu-latest TO ubuntu-22.04 TO FIX LIBASOUND2 ERROR ---
+    runs-on: ubuntu-22.04
     timeout-minutes: 360
     
     steps:
@@ -38,6 +39,7 @@ jobs:
     - name: Install dependencies
       run: |
         pip install -r requirements.txt
+        # Ensuring we install the browsers AND system deps
         playwright install chromium --with-deps
     
     - name: Run scraper
@@ -46,7 +48,7 @@ jobs:
         # This now uses the input you select in the GitHub Actions UI
         TEST_MODE: ${{ github.event.inputs.test_mode }}
     
-    # --- NEW DEBUG STEP ---
+    # --- DEBUG STEP ---
     - name: Debug - List all files
       if: always()
       run: |
