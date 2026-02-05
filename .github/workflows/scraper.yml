@@ -1,4 +1,5 @@
 name: Run Recruiting Class Scraper
+
 on:
   workflow_dispatch:
     inputs:
@@ -19,10 +20,12 @@ on:
           - '10'
           - '20'
           - '50'
+
 jobs:
   scrape:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
@@ -35,20 +38,35 @@ jobs:
     - name: Install dependencies
       run: |
         pip install -r requirements.txt
-        playwright install chromium
+        playwright install chromium --with-deps
     
     - name: Run scraper
       run: python scraper.py
       env:
-        TEST_MODE: true
+        # This now uses the input you select in the GitHub Actions UI
+        TEST_MODE: ${{ github.event.inputs.test_mode }}
     
-    - name: Validate output structure
-      run: python validate_output.py
+    # --- NEW DEBUG STEP ---
+    - name: Debug - List all files
       if: always()
+      run: |
+        echo "=== Current Directory Contents ==="
+        ls -la
+        echo "=== Output Directory Contents ==="
+        if [ -d "output" ]; then
+          ls -R output
+        else
+          echo "Output directory does not exist!"
+        fi
+    # ----------------------
+
+    - name: Validate output structure
+      if: always()
+      run: python validate_output.py
     
     - name: Validate accuracy
-      run: python validate_accuracy.py ${{ github.event.inputs.validation_sample }}
       if: always()
+      run: python validate_accuracy.py ${{ github.event.inputs.validation_sample }}
     
     - name: Upload CSV output
       uses: actions/upload-artifact@v4
