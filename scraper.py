@@ -7,21 +7,23 @@ import asyncio
 import csv
 import os
 import re
-import sys  # <--- Added sys for exit codes
+import sys
 from datetime import datetime
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 # =============================================================================
-# CONFIGURATION - EDIT THESE VALUES
+# CONFIGURATION
 # =============================================================================
 
-YEARS = [2019]  # Change to scrape different years: [2019, 2020, 2021, etc.]
+YEARS = [2019]
 OUTPUT_DIR = Path("output")
-# TEST_MODE is now strictly controlled by the env var passed from GitHub
 TEST_MODE = os.getenv('TEST_MODE', 'false').lower() == 'true'
 DIAGNOSTICS_MODE = True 
 MAX_CONCURRENT = 4 
+
+# This makes the bot look like a real Chrome browser on Windows
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 # =============================================================================
 # DATA STRUCTURES
@@ -45,13 +47,11 @@ def extract_player_id(url: str) -> str:
     return match.group(1) if match else "NA"
 
 def clean_text(text: str) -> str:
-    if not text:
-        return "NA"
+    if not text: return "NA"
     return text.strip().replace('\n', ' ').replace('\r', '')
 
 def parse_rank(text: str) -> str:
-    if not text:
-        return "NA"
+    if not text: return "NA"
     match = re.search(r'#?(\d+)', text)
     return match.group(1) if match else "NA"
 
@@ -59,33 +59,48 @@ def parse_rank(text: str) -> str:
 # LOAD MORE FUNCTIONALITY
 # =============================================================================
 
-async def click_load_more_until_complete(page, year: int) -> list:
+async def click_load_more_until_complete(browser, year: int) -> list:
     print(f"\n📋 Loading all players for {year}...")
     
+    # Create context with User-Agent to bypass simple bot detection
+    context = await browser.new_context(user_agent=USER_AGENT)
+    page = await context.new_page()
+    
     url = f"https://247sports.com/season/{year}-football/compositerecruitrankings/"
+    
     try:
         await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(5000) # Give extra time for any redirects/checks
     except Exception as e:
         print(f"❌ Failed to load initial page for {year}: {e}")
+        await context.close()
         return []
+
+    # --- DEBUG: CHECK FOR BLOCKING ---
+    initial_count = await page.locator('li.recruit').count()
+    if initial_count == 0:
+        print(f"⚠️  No players found on page for {year}.")
+        print("    Taking screenshot to check for bot blocking...")
+        
+        # Save screenshot to diagnostics
+        diag_dir = OUTPUT_DIR / "diagnostics"
+        diag_dir.mkdir(parents=True, exist_ok=True)
+        screenshot_path = diag_dir / f"blocked_debug_{year}.png"
+        await page.screenshot(path=screenshot_path)
+        print(f"    📸 Screenshot saved to: {screenshot_path}")
+        
+        # Try waiting a bit longer just in case
+        await page.wait_for_timeout(5000)
+        if await page.locator('li.recruit').count() == 0:
+            await context.close()
+            return []
 
     player_urls = []
     click_count = 0
     max_clicks = 500 if not TEST_MODE else 1 
     
-    # Check if we are even on a valid page
-    initial_count = await page.locator('li.recruit').count()
-    if initial_count == 0:
-        print(f"⚠️  No players found on page for {year}. Page might be broken or empty.")
-        # Try waiting a bit longer just in case
-        await page.wait_for_timeout(5000)
-        if await page.locator('li.recruit').count() == 0:
-            return []
-
     while click_count < max_clicks:
         current_players = await page.locator('li.recruit').count()
-        
         load_more_button = page.locator('a.load-more, button.load-more, a:has-text("Load More")')
         
         try:
@@ -97,7 +112,7 @@ async def click_load_more_until_complete(page, year: int) -> list:
             else:
                 print(f"  ✓ Load More button hidden - all players loaded!")
                 break
-        except Exception as e:
+        except Exception:
             print(f"  ✓ Load More complete (no more players to load)")
             break
     
@@ -107,19 +122,17 @@ async def click_load_more_until_complete(page, year: int) -> list:
     for link in player_links:
         href = await link.get_attribute('href')
         if href and '/player/' in href:
-            if href.startswith('/'):
-                href = f"https://247sports.com{href}"
+            if href.startswith('/'): href = f"https://247sports.com{href}"
             player_urls.append(href)
     
-    # Remove duplicates
-    player_urls = list(dict.fromkeys(player_urls))
-
+    player_urls = list(dict.fromkeys(player_urls)) # Remove dupes
     print(f"  ✓ Found {len(player_urls)} player profiles")
     
     if TEST_MODE and len(player_urls) > 50:
         player_urls = player_urls[:50]
         print(f"  ℹ️  TEST MODE: Limited to 50 players")
     
+    await context.close()
     return player_urls
 
 # =============================================================================
@@ -134,11 +147,8 @@ async def navigate_to_recruiting_profile(page) -> bool:
             await page.wait_for_load_state('domcontentloaded', timeout=30000)
             await page.wait_for_timeout(1500)
             return True
-        else:
-            # print("    ⚠️  No recruiting profile link found") # Reduce noise
-            return False
-    except Exception as e:
-        print(f"    ⚠️  Error navigating to recruiting profile: {e}")
+        return False
+    except:
         return False
 
 async def parse_profile(page, url: str, year: int) -> dict:
@@ -152,9 +162,7 @@ async def parse_profile(page, url: str, year: int) -> dict:
         await page.goto(url, wait_until='domcontentloaded', timeout=30000)
         await page.wait_for_timeout(1500)
         
-        if not await navigate_to_recruiting_profile(page):
-            # If we can't find the sub-profile, we just parse what we have on the main page
-            pass 
+        await navigate_to_recruiting_profile(page)
         
         html = await page.content()
         from bs4 import BeautifulSoup
@@ -241,11 +249,9 @@ async def parse_profile(page, url: str, year: int) -> dict:
                 item_text = clean_text(item.get_text())
                 if 'signed' in item_text.lower() or 'commitment' in item_text.lower():
                     date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', item_text)
-                    if date_match and data['Signed Date'] == "NA":
-                        data['Signed Date'] = date_match.group(1)
+                    if date_match and data['Signed Date'] == "NA": data['Signed Date'] = date_match.group(1)
                     team_match = re.search(r'(?:to|with)\s+([A-Z][^,.]+)', item_text)
-                    if team_match and data['Signed Team'] == "NA":
-                        data['Signed Team'] = clean_text(team_match.group(1))
+                    if team_match and data['Signed Team'] == "NA": data['Signed Team'] = clean_text(team_match.group(1))
                 elif 'draft' in item_text.lower():
                     date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', item_text)
                     if date_match: data['Draft Date'] = date_match.group(1)
@@ -262,14 +268,7 @@ async def parse_profile(page, url: str, year: int) -> dict:
         return data
         
     except Exception as e:
-        print(f"    ❌ Error parsing profile: {e}")
-        if DIAGNOSTICS_MODE:
-            problem_file = OUTPUT_DIR / "diagnostics" / f"error_{data['247 ID']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-            problem_file.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                problem_file.write_text(await page.content(), encoding='utf-8')
-            except:
-                pass
+        # print(f"    ❌ Error parsing profile: {e}")
         return data
 
 # =============================================================================
@@ -278,11 +277,15 @@ async def parse_profile(page, url: str, year: int) -> dict:
 
 async def scrape_player_batch(browser, urls: list, year: int, batch_num: int) -> list:
     tasks = []
+    # Create a fresh context with User Agent for this batch
+    context = await browser.new_context(user_agent=USER_AGENT)
+    
     for i, url in enumerate(urls):
-        page = await browser.new_page()
+        page = await context.new_page()
         tasks.append(scrape_player(page, url, year, batch_num * MAX_CONCURRENT + i + 1, len(urls)))
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    await context.close() # Close context to free resources
     
     valid_results = []
     for result in results:
@@ -297,7 +300,7 @@ async def scrape_player(page, url: str, year: int, player_num: int, total: int) 
         if data['Player Name'] != "NA":
             print(f"    ✓ {data['Player Name']} - {data['Position']} - {data['Composite Stars']}⭐")
         else:
-            print(f"    ⚠️  Warning: Missing player name")
+            print(f"    ⚠️  Warning: Missing player name (Blocked or Empty)")
         return data
     except Exception as e:
         print(f"    ❌ Error: {e}")
@@ -314,9 +317,8 @@ async def scrape_year(browser, year: int) -> list:
     print(f"🎓 SCRAPING {year} RECRUITING CLASS")
     print(f"{'='*80}")
     
-    page = await browser.new_page()
-    player_urls = await click_load_more_until_complete(page, year)
-    await page.close()
+    # Pass browser so it can create its own context
+    player_urls = await click_load_more_until_complete(browser, year)
     
     if not player_urls:
         print(f"  ❌ No players found for {year}")
@@ -346,12 +348,12 @@ async def main():
     print(f"⚡ Concurrency: {MAX_CONCURRENT}")
     print("="*80)
     
-    # Ensure Output Directory Exists
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     if DIAGNOSTICS_MODE:
         (OUTPUT_DIR / "diagnostics").mkdir(parents=True, exist_ok=True)
     
     async with async_playwright() as p:
+        # Launch browser without context, contexts are created per task
         browser = await p.chromium.launch(headless=True)
         all_players = []
         for year in YEARS:
@@ -359,13 +361,11 @@ async def main():
             all_players.extend(year_data)
         await browser.close()
     
-    # --- CRITICAL FIX: EXIT WITH ERROR IF NO DATA ---
     if not all_players:
         print("\n❌ CRITICAL: No data scraped from any year.")
         print("   Exiting with error code 1 to notify GitHub Actions.")
         sys.exit(1)
 
-    # Save to CSV
     year_range = f"{min(YEARS)}-{max(YEARS)}" if len(YEARS) > 1 else str(YEARS[0])
     timestamp = datetime.now().strftime('%Y%m%d')
     filename = OUTPUT_DIR / f"recruiting_class_{year_range}_{timestamp}.csv"
