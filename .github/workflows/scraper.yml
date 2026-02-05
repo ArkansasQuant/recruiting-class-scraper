@@ -1,113 +1,112 @@
 name: Run Recruiting Class Scraper
 
 on:
-workflow_dispatch:
-inputs:
-test_mode:
-description: ‘Test mode (true = 50 players, false = full scrape)’
-required: true
-default: ‘false’
-type: choice
-options:
-- ‘true’
-- ‘false’
-validation_sample:
-description: ‘Number of players for accuracy validation’
-required: true
-default: ‘20’
-type: string
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Test mode (true = 50 players, false = full scrape)'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      validation_sample:
+        description: 'Number of players for accuracy validation'
+        required: true
+        default: '20'
+        type: string
 
 jobs:
-scrape:
-runs-on: ubuntu-20.04
-timeout-minutes: 360
-
-```
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v3
-  
-  - name: Set up Python
-    uses: actions/setup-python@v4
-    with:
-      python-version: '3.9'
-  
-  - name: Install system dependencies
-    run: |
-      sudo apt-get update
-      sudo apt-get install -y \
-        libnss3 \
-        libnspr4 \
-        libatk1.0-0 \
-        libatk-bridge2.0-0 \
-        libcups2 \
-        libdrm2 \
-        libdbus-1-3 \
-        libxkbcommon0 \
-        libxcomposite1 \
-        libxdamage1 \
-        libxfixes3 \
-        libxrandr2 \
-        libgbm1 \
-        libpango-1.0-0 \
-        libcairo2 \
-        libasound2 \
-        libatspi2.0-0 \
-        libxshmfence1
-  
-  - name: Install Python dependencies
-    run: |
-      pip install -r requirements.txt
-  
-  - name: Install Playwright browsers
-    run: |
-      playwright install chromium
-  
-  - name: Run scraper
-    env:
-      TEST_MODE: ${{ github.event.inputs.test_mode }}
-    run: |
-      python scraper.py
-  
-  - name: Validate output structure
-    if: always()
-    run: |
-      python validate_output.py
-  
-  - name: Validate accuracy
-    if: always()
-    run: |
-      python validate_accuracy.py ${{ github.event.inputs.validation_sample }}
-  
-  - name: Upload CSV output
-    uses: actions/upload-artifact@v4
-    if: always()
-    with:
-      name: CSV_Output
-      path: output/*.csv
-      retention-days: 90
-  
-  - name: Upload diagnostics
-    uses: actions/upload-artifact@v4
-    if: always()
-    with:
-      name: Diagnostics
-      path: output/diagnostics/
-      retention-days: 30
-  
-  - name: Display summary
-    if: always()
-    run: |
-      echo "============================================"
-      echo "🎓 RECRUITING CLASS SCRAPER SUMMARY"
-      echo "============================================"
-      echo ""
-      echo "📊 Output Files:"
-      ls -lh output/*.csv 2>/dev/null || echo "No CSV files generated"
-      echo ""
-      echo "🔍 Diagnostic Files:"
-      ls -lh output/diagnostics/ 2>/dev/null || echo "No diagnostic files"
-      echo ""
-      echo "✅ Workflow Complete!"
-      echo "Download artifacts above to get your data."
-      echo "============================================"
+  scrape:
+    runs-on: ubuntu-20.04
+    timeout-minutes: 360
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libnss3 \
+            libnspr4 \
+            libatk1.0-0 \
+            libatk-bridge2.0-0 \
+            libcups2 \
+            libdrm2 \
+            libdbus-1-3 \
+            libxkbcommon0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxrandr2 \
+            libgbm1 \
+            libpango-1.0-0 \
+            libcairo2 \
+            libasound2 \
+            libatspi2.0-0 \
+            libxshmfence1
+      
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      - name: Install Playwright browsers
+        run: |
+          playwright install chromium
+      
+      - name: Run scraper
+        env:
+          TEST_MODE: ${{ github.event.inputs.test_mode }}
+        run: |
+          python scraper.py
+      
+      - name: Validate output structure
+        if: always()
+        run: |
+          python validate_output.py
+      
+      - name: Validate accuracy
+        if: always()
+        run: |
+          python validate_accuracy.py ${{ github.event.inputs.validation_sample }}
+      
+      - name: Upload CSV output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: CSV_Output
+          path: output/*.csv
+          retention-days: 90
+      
+      - name: Upload diagnostics
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Diagnostics
+          path: output/diagnostics/
+          retention-days: 30
+      
+      - name: Display summary
+        if: always()
+        run: |
+          echo "============================================"
+          echo "🎓 RECRUITING CLASS SCRAPER SUMMARY"
+          echo "============================================"
+          echo ""
+          echo "📊 Output Files:"
+          ls -lh output/*.csv 2>/dev/null || echo "No CSV files generated"
+          echo ""
+          echo "🔍 Diagnostic Files:"
+          ls -lh output/diagnostics/ 2>/dev/null || echo "No diagnostic files"
+          echo ""
+          echo "✅ Workflow Complete!"
+          echo "Download artifacts above to get your data."
+          echo "============================================"
