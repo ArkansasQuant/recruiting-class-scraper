@@ -1,91 +1,89 @@
 name: Run Recruiting Class Scraper
 
 on:
-  workflow_dispatch:
-    inputs:
-      test_mode:
-        description: 'Test mode (true = 50 players, false = full scrape)'
-        required: true
-        default: 'false'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-      validation_sample:
-        description: 'Number of players for accuracy validation'
-        required: true
-        default: '20'
-        type: string
+workflow_dispatch:
+inputs:
+test_mode:
+description: ‘Test mode (true = 50 players, false = full scrape)’
+required: true
+default: ‘false’
+type: choice
+options:
+- ‘true’
+- ‘false’
+validation_sample:
+description: ‘Number of players for accuracy validation’
+required: true
+default: ‘20’
+type: string
 
 jobs:
-  scrape:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          playwright install --with-deps chromium
+scrape:
+runs-on: ubuntu-latest
+timeout-minutes: 360  # 6 hours max
 
-      
-      - name: Run scraper
-        env:
-          TEST_MODE: ${{ github.event.inputs.test_mode }}
-        run: |
-          # Modify scraper.py with test mode setting
-          if [ "$TEST_MODE" = "true" ]; then
-            sed -i 's/TEST_MODE = False/TEST_MODE = True/' scraper.py
-          fi
-          
-          python scraper.py
-      
-      - name: Validate output structure
-        run: |
-          python validate_output.py
-      
-      - name: Validate accuracy
-        run: |
-          python validate_accuracy.py ${{ github.event.inputs.validation_sample }}
-      
-      - name: Upload CSV output
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: CSV_Output
-          path: output/*.csv
-          retention-days: 90
-      
-      - name: Upload diagnostics
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: Diagnostics
-          path: output/diagnostics/
-          retention-days: 30
-      
-      - name: Display summary
-        if: always()
-        run: |
-          echo "============================================"
-          echo "🎓 RECRUITING CLASS SCRAPER SUMMARY"
-          echo "============================================"
-          echo ""
-          echo "📊 Output Files:"
-          ls -lh output/*.csv 2>/dev/null || echo "No CSV files generated"
-          echo ""
-          echo "🔍 Diagnostic Files:"
-          ls -lh output/diagnostics/ 2>/dev/null || echo "No diagnostic files"
-          echo ""
-          echo "✅ Workflow Complete!"
-          echo "Download artifacts above to get your data."
-          echo "============================================"
+```
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v3
+  
+  - name: Set up Python
+    uses: actions/setup-python@v4
+    with:
+      python-version: '3.9'
+  
+  - name: Install dependencies
+    run: |
+      pip install -r requirements.txt
+      playwright install chromium
+      playwright install-deps
+  
+  - name: Run scraper
+    env:
+      TEST_MODE: ${{ github.event.inputs.test_mode }}
+    run: |
+      python scraper.py
+  
+  - name: Validate output structure
+    if: always()
+    run: |
+      python validate_output.py
+  
+  - name: Validate accuracy
+    if: always()
+    run: |
+      python validate_accuracy.py ${{ github.event.inputs.validation_sample }}
+  
+  - name: Upload CSV output
+    uses: actions/upload-artifact@v4
+    if: always()
+    with:
+      name: CSV_Output
+      path: output/*.csv
+      retention-days: 90
+  
+  - name: Upload diagnostics
+    uses: actions/upload-artifact@v4
+    if: always()
+    with:
+      name: Diagnostics
+      path: output/diagnostics/
+      retention-days: 30
+  
+  - name: Display summary
+    if: always()
+    run: |
+      echo "============================================"
+      echo "🎓 RECRUITING CLASS SCRAPER SUMMARY"
+      echo "============================================"
+      echo ""
+      echo "📊 Output Files:"
+      ls -lh output/*.csv 2>/dev/null || echo "No CSV files generated"
+      echo ""
+      echo "🔍 Diagnostic Files:"
+      ls -lh output/diagnostics/ 2>/dev/null || echo "No diagnostic files"
+      echo ""
+      echo "✅ Workflow Complete!"
+      echo "Download artifacts above to get your data."
+      echo "============================================"
+```
