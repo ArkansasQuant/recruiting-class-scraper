@@ -76,7 +76,7 @@ def normalize_date(date_str: str) -> str:
 def is_date_valid_for_class(date_str: str, recruiting_year: int) -> bool:
     """
     Validation Guardrail:
-    Ensures the date is relevant to the High School class year, not a later transfer.
+    Ensures the date is relevant to the High School class year.
     Logic: Date must be BEFORE Sept 1st of the Recruiting Year.
     """
     if date_str == "NA": return False
@@ -192,8 +192,8 @@ async def navigate_to_recruiting_profile(page) -> bool:
 async def parse_timeline(page, data, year):
     """
     Parses timeline for Commitment and Draft info.
-    Handles PAGINATION for deep timelines.
-    Applies 3-POINT PRIORITY SYSTEM (Commitment > Signed > Enrolled).
+    Handles PAGINATION.
+    Applies AGGRESSIVE PRIORITY: Commitment (100) > Signed (1).
     """
     try:
         page_count = 0
@@ -225,24 +225,27 @@ async def parse_timeline(page, data, year):
                     if team_match and data['Draft Team'] == "NA":
                         data['Draft Team'] = clean_text(team_match.group(1))
                 
-                # --- COMMITMENT DATE LOGIC (3-Point Priority) ---
+                # --- COMMITMENT DATE LOGIC (Nuclear Priority) ---
                 item_priority = 0
-                if 'commitment' in item_text.lower() or 'hard commit' in item_text.lower() or 'commits to' in item_text.lower(): item_priority = 3
-                elif 'signed' in item_text.lower(): item_priority = 2
-                elif 'enrolled' in item_text.lower(): item_priority = 1
+                if 'commitment' in item_text.lower() or 'hard commit' in item_text.lower() or 'commits to' in item_text.lower():
+                     item_priority = 100 # Highest possible priority
+                elif 'signed' in item_text.lower():
+                     item_priority = 1   # Low priority
+                elif 'enrolled' in item_text.lower():
+                     item_priority = 0   # Lowest
                 
                 if item_priority > 0:
                     date_match = re.search(r'([A-Z][a-z]+\s+\d{1,2},\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})', item_text)
                     found_date = normalize_date(date_match.group(1)) if date_match else "NA"
                     
-                    # Verify date is within the recruiting class window
+                    # Verify date is within window
                     if found_date != "NA" and is_date_valid_for_class(found_date, year):
                         
-                        current_priority = data.get('_date_priority', 0)
+                        current_priority = data.get('_date_priority', -1)
                         
-                        # PRIORITY CHECK: Only update if the new event is 'better' than what we have.
-                        # >= allows updating to a newer date of the same type, or upgrading type.
-                        if item_priority >= current_priority:
+                        # Only overwrite if new priority is strictly greater
+                        # This means once we find Commitment (100), Signed (1) will NEVER overwrite it.
+                        if item_priority > current_priority:
                             data['Signed Date'] = found_date
                             data['_date_priority'] = item_priority
                             
@@ -271,7 +274,7 @@ async def parse_profile(page, url: str, year: int) -> dict:
     data['Recruiting Year'] = str(year)
     data['Scrape Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     data['Data Source'] = '247Sports Composite'
-    data['_date_priority'] = 0 
+    data['_date_priority'] = -1 
     
     try:
         await page.goto(url, wait_until='domcontentloaded', timeout=30000)
@@ -313,13 +316,11 @@ async def parse_profile(page, url: str, year: int) -> dict:
         
         data['Class'] = str(year)
         
-        # --- 2. RANKINGS (Updated for Composite & 247 sections) ---
-        # Select all possible ranking containers
+        # --- 2. RANKINGS (Fixed: Sibling Selectors for Position) ---
         ranking_sections = soup.select('section.rankings, section.rankings-section, div.ranking-section')
         
         for section in ranking_sections:
-            # Try to identify the section title
-            header = section.select_one('.rankings-header h3, h3, .title')
+            header = section.select_one('.rankings-header h3, h3.title, h3')
             if not header: continue
             
             header_text = clean_text(header.get_text()).upper()
@@ -328,10 +329,9 @@ async def parse_profile(page, url: str, year: int) -> dict:
                 prefix = "Composite"
             elif "247SPORTS" in header_text and "COMPOSITE" not in header_text:
                 prefix = "247"
-            
             if not prefix: continue
             
-            # Stars (Look in star-block or just icon)
+            # Stars
             stars = section.select('span.icon-starsolid.yellow, i.icon-starsolid.yellow')
             if stars: data[f'{prefix} Stars'] = str(min(len(stars), 5))
             
@@ -342,30 +342,35 @@ async def parse_profile(page, url: str, year: int) -> dict:
                 rating_match = re.search(r'(\d+(?:\.\d+)?)', rating_text)
                 if rating_match: data[f'{prefix} Rating'] = rating_match.group(1)
 
-            # Ranks List (The Card View)
+            # Ranks List (The "Sibling" Fix)
             ranks_list = section.select_one('ul.ranks-list')
             if ranks_list:
                 for li in ranks_list.select('li'):
-                    a_tag = li.select_one('a')
-                    if not a_tag: continue
-                    href = a_tag.get('href', '')
+                    # 1. Look for Position Name in <b> tag (Sibling to <a>)
+                    pos_node = li.select_one('b')
                     
-                    # Position Rank (Link contains Position=)
-                    if 'Position=' in href:
-                        # Extract Position Name from <b> tag
-                        pos_node = a_tag.select_one('b')
-                        if pos_node: data[f'{prefix} Position'] = clean_text(pos_node.get_text())
+                    # 2. Look for Link with Rank
+                    link_tag = li.select_one('a')
+                    
+                    if link_tag:
+                        href = link_tag.get('href', '')
                         
-                        # Extract Rank from <strong> tag
-                        rank_node = a_tag.select_one('strong')
-                        if rank_node: data[f'{prefix} Position Rank'] = parse_rank(rank_node.get_text())
-                    
-                    # National Rank (Link contains HighSchool or Natl label)
-                    elif 'InstitutionGroup=HighSchool' in href or 'Natl' in clean_text(li.get_text()):
-                         rank_node = a_tag.select_one('strong')
-                         if rank_node: data[f'{prefix} National Rank'] = parse_rank(rank_node.get_text())
+                        # Case A: Position Rank
+                        if 'Position=' in href:
+                            if pos_node: 
+                                data[f'{prefix} Position'] = clean_text(pos_node.get_text())
+                            
+                            rank_node = link_tag.select_one('strong')
+                            if rank_node: 
+                                data[f'{prefix} Position Rank'] = parse_rank(rank_node.get_text())
+                        
+                        # Case B: National Rank
+                        elif 'InstitutionGroup=HighSchool' in href or 'Natl' in clean_text(li.get_text()):
+                             rank_node = link_tag.select_one('strong')
+                             if rank_node: 
+                                 data[f'{prefix} National Rank'] = parse_rank(rank_node.get_text())
 
-        # --- 3. TIMELINE (Initial Pass) ---
+        # --- 3. TIMELINE ---
         await parse_timeline(page, data, year)
 
         # --- 4. TIMELINE DEEP DIVE ---
@@ -380,7 +385,7 @@ async def parse_profile(page, url: str, year: int) -> dict:
                 except Exception as e:
                     pass
 
-        # Fallback for Signed Team
+        # Fallback for Signed Team (Only if we have absolutely nothing)
         if data['Signed Team'] == "NA":
             commit_banner = soup.select_one('.commit-banner, .commitment')
             if commit_banner:
