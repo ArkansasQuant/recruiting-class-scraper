@@ -400,7 +400,12 @@ async def parse_profile(page, url: str, year: int) -> dict:
         await parse_timeline(page, data, year)
 
         # --- 4. TIMELINE DEEP DIVE (Full timeline page) ---
-        see_all_link = page.locator('.timeline-footer a')
+        # Scroll down to make timeline visible
+        print(f"    🔍 DEBUG: Scrolling to find timeline section")
+        await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+        await page.wait_for_timeout(2000)
+        
+        see_all_link = page.locator('.timeline-footer a, a:has-text("See all"), a:has-text("See All")')
         if await see_all_link.count() > 0:
             href = await see_all_link.first.get_attribute('href')
             if href:
