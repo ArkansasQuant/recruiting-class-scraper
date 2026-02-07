@@ -209,64 +209,89 @@ async def parse_timeline(page, data, year):
             items = []
             if is_full_timeline:
                 items = soup.select('ul.timeline-event-index_lst li')
+                print(f"    🔍 DEBUG: Found {len(items)} timeline items on full timeline page {page_count + 1}")
             else:
                 items = soup.select('.timeline-item, .timeline li, ul.timeline > li, .vertical-timeline-element-content')
+                print(f"    🔍 DEBUG: Found {len(items)} timeline items on abbreviated timeline")
             
             for item in items:
                 item_text = clean_text(item.get_text())
+                
+                # DEBUG: Print first 100 chars of each item
+                print(f"    🔍 DEBUG: Timeline item: {item_text[:100]}...")
                 
                 # --- DRAFT LOGIC ---
                 if 'draft' in item_text.lower():
                     date_match = re.search(r'([A-Z][a-z]+\s+\d{1,2},\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})', item_text)
                     if date_match and data['Draft Date'] == "NA":
                          data['Draft Date'] = normalize_date(date_match.group(1))
+                         print(f"    ✅ DEBUG: Found Draft Date: {data['Draft Date']}")
                     
                     team_match = re.search(r'([A-Za-z0-9\s\.]+?)\s+(?:select|picked|drafted)', item_text, re.IGNORECASE)
                     if team_match and data['Draft Team'] == "NA":
                         data['Draft Team'] = clean_text(team_match.group(1))
+                        print(f"    ✅ DEBUG: Found Draft Team: {data['Draft Team']}")
                 
                 # --- COMMITMENT DATE LOGIC (Nuclear Priority) ---
                 item_priority = 0
-                if 'commitment' in item_text.lower() or 'hard commit' in item_text.lower() or 'commits to' in item_text.lower():
+                if 'commitment' in item_text.lower() or 'committed' in item_text.lower() or 'hard commit' in item_text.lower() or 'commits to' in item_text.lower():
                      item_priority = 100 # Highest possible priority
-                elif 'signed' in item_text.lower():
+                     print(f"    ✅ DEBUG: Found COMMITMENT entry (priority 100)")
+                elif 'signed' in item_text.lower() or 'signing' in item_text.lower():
                      item_priority = 1   # Low priority
+                     print(f"    ⚠️  DEBUG: Found SIGNING entry (priority 1)")
                 elif 'enrolled' in item_text.lower():
                      item_priority = 0   # Lowest
+                     print(f"    ⚠️  DEBUG: Found ENROLLMENT entry (priority 0)")
                 
                 if item_priority > 0:
                     date_match = re.search(r'([A-Z][a-z]+\s+\d{1,2},\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})', item_text)
                     found_date = normalize_date(date_match.group(1)) if date_match else "NA"
+                    
+                    print(f"    🔍 DEBUG: Extracted date: {found_date}")
                     
                     # Verify date is within window
                     if found_date != "NA" and is_date_valid_for_class(found_date, year):
                         
                         current_priority = data.get('_date_priority', -1)
                         
+                        print(f"    🔍 DEBUG: Current priority: {current_priority}, New priority: {item_priority}")
+                        
                         # Only overwrite if new priority is strictly greater
                         # This means once we find Commitment (100), Signed (1) will NEVER overwrite it.
                         if item_priority > current_priority:
                             data['Signed Date'] = found_date
                             data['_date_priority'] = item_priority
+                            print(f"    ✅ DEBUG: UPDATED Signed Date to {found_date} (priority {item_priority})")
                             
                             team_match = re.search(r'(?:to|with|at|commits to)\s+([A-Z][^,.]+)', item_text)
                             if team_match:
                                 data['Signed Team'] = clean_text(team_match.group(1))
+                                print(f"    ✅ DEBUG: UPDATED Signed Team to {data['Signed Team']}")
+                        else:
+                            print(f"    ⚠️  DEBUG: SKIPPED update - priority {item_priority} not greater than {current_priority}")
+                    else:
+                        if found_date == "NA":
+                            print(f"    ⚠️  DEBUG: No valid date found in item")
+                        else:
+                            print(f"    ⚠️  DEBUG: Date {found_date} failed validation for year {year}")
 
             # --- PAGINATION ---
             if is_full_timeline:
                 next_button = page.locator('li.next_itm a')
                 if await next_button.count() > 0 and await next_button.is_visible():
+                    print(f"    🔍 DEBUG: Clicking to page {page_count + 2}")
                     await next_button.click()
                     await page.wait_for_timeout(1500)
                     page_count += 1
                 else:
+                    print(f"    🔍 DEBUG: No more pages to click")
                     break 
             else:
                 break 
 
     except Exception as e:
-        pass 
+        print(f"    ❌ DEBUG: Error in parse_timeline: {e}")
 
 async def parse_profile(page, url: str, year: int) -> dict:
     data = {header: "NA" for header in CSV_HEADERS}
@@ -370,20 +395,25 @@ async def parse_profile(page, url: str, year: int) -> dict:
                              if rank_node: 
                                  data[f'{prefix} National Rank'] = parse_rank(rank_node.get_text())
 
-        # --- 3. TIMELINE ---
+        # --- 3. TIMELINE (Abbreviated on main profile) ---
+        print(f"    🔍 DEBUG: Parsing abbreviated timeline on main profile page")
         await parse_timeline(page, data, year)
 
-        # --- 4. TIMELINE DEEP DIVE ---
+        # --- 4. TIMELINE DEEP DIVE (Full timeline page) ---
         see_all_link = page.locator('.timeline-footer a')
         if await see_all_link.count() > 0:
             href = await see_all_link.first.get_attribute('href')
             if href:
                 full_timeline_url = f"https://247sports.com{href}" if href.startswith('/') else href
+                print(f"    🔍 DEBUG: Navigating to full timeline: {full_timeline_url}")
                 try:
                     await page.goto(full_timeline_url, wait_until='domcontentloaded', timeout=15000)
+                    print(f"    ✅ DEBUG: Successfully loaded full timeline page")
                     await parse_timeline(page, data, year) 
                 except Exception as e:
-                    pass
+                    print(f"    ❌ DEBUG: Failed to load full timeline: {e}")
+        else:
+            print(f"    ⚠️  DEBUG: No 'See All Entries' link found")
 
         # Fallback for Signed Team (Only if we have absolutely nothing)
         if data['Signed Team'] == "NA":
@@ -395,9 +425,12 @@ async def parse_profile(page, url: str, year: int) -> dict:
                     if team_text.lower() not in ['committed', 'commitment', 'signed']:
                         data['Signed Team'] = team_text
         
+        print(f"    📊 DEBUG: Final data - Signed Date: {data['Signed Date']}, Priority: {data.get('_date_priority', 'N/A')}")
+        
         return data
         
     except Exception as e:
+        print(f"    ❌ DEBUG: Error in parse_profile: {e}")
         return data
 
 # =============================================================================
@@ -425,7 +458,7 @@ async def scrape_player(page, url: str, year: int, player_num: int, total: int) 
         print(f"  [{player_num}/{total}] Scraping: {url}")
         data = await parse_profile(page, url, year)
         if data['Player Name'] != "NA":
-            print(f"    ✓ {data['Player Name']} - {data['Position']} - {data['Composite Stars']}⭐")
+            print(f"    ✓ {data['Player Name']} - {data['Position']} - {data['Composite Stars']}⭐ - Signed: {data['Signed Date']}")
         else:
             print(f"    ⚠️  Warning: Missing player name (Blocked or Empty)")
         return data
