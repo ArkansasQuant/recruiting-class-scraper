@@ -227,7 +227,8 @@ async def parse_timeline(page, data, year):
                          data['Draft Date'] = normalize_date(date_match.group(1))
                          print(f"    ✅ DEBUG: Found Draft Date: {data['Draft Date']}")
                     
-                    team_match = re.search(r'([A-Za-z0-9\s\.]+?)\s+(?:select|picked|drafted)', item_text, re.IGNORECASE)
+                    # Extract team name, excluding the word "Draft" itself
+                    team_match = re.search(r'(?:Draft[:\s]+)?([A-Z][A-Za-z0-9\s\.]+?)\s+(?:select|pick)', item_text, re.IGNORECASE)
                     if team_match and data['Draft Team'] == "NA":
                         data['Draft Team'] = clean_text(team_match.group(1))
                         print(f"    ✅ DEBUG: Found Draft Team: {data['Draft Team']}")
