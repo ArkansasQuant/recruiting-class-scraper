@@ -177,85 +177,83 @@ async def navigate_to_recruiting_profile(page) -> bool:
 
 async def parse_timeline(page, data):
     """
-    Parses timeline from either the main page or the dedicated 'See all entries' page.
+    Parses timeline for Commitment and Draft info.
+    Handles PAGINATION for deep timelines.
     """
     try:
-        html = await page.content()
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, 'html.parser')
+        page_count = 0
+        max_pages = 10 # Safety limit
         
-        # Determine if we are on the main profile or the full timeline page
-        is_full_timeline = soup.select_one('ul.timeline-event-index_lst') is not None
-        
-        items = []
-        if is_full_timeline:
-            # Full Timeline Page Structure
-            items = soup.select('ul.timeline-event-index_lst li')
-        else:
-            # Main Profile Page Structure
-            # Also checking .vertical-timeline-element-content for Draft info
-            items = soup.select('.timeline-item, .timeline li, ul.timeline > li, .vertical-timeline-element-content')
+        while page_count < max_pages:
+            html = await page.content()
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # Check context
+            is_full_timeline = soup.select_one('ul.timeline-event-index_lst') is not None
+            
+            items = []
+            if is_full_timeline:
+                items = soup.select('ul.timeline-event-index_lst li')
+            else:
+                items = soup.select('.timeline-item, .timeline li, ul.timeline > li, .vertical-timeline-element-content')
+            
+            # Parse items on current page
+            for item in items:
+                item_text = clean_text(item.get_text())
+                
+                # --- DRAFT LOGIC ---
+                if 'draft' in item_text.lower():
+                    date_match = re.search(r'([A-Z][a-z]+\s+\d{1,2},\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})', item_text)
+                    if date_match and data['Draft Date'] == "NA":
+                         data['Draft Date'] = normalize_date(date_match.group(1))
+                    
+                    team_match = re.search(r'([A-Za-z0-9\s\.]+?)\s+(?:select|picked|drafted)', item_text, re.IGNORECASE)
+                    if team_match and data['Draft Team'] == "NA":
+                        data['Draft Team'] = clean_text(team_match.group(1))
+                
+                # --- COMMITMENT DATE LOGIC ---
+                # Priority: Commitment (3) > Signed (2) > Enrolled (1)
+                item_priority = 0
+                if 'commitment' in item_text.lower() or 'hard commit' in item_text.lower() or 'commits to' in item_text.lower(): item_priority = 3
+                elif 'signed' in item_text.lower(): item_priority = 2
+                elif 'enrolled' in item_text.lower(): item_priority = 1
+                
+                if item_priority > 0:
+                    date_match = re.search(r'([A-Z][a-z]+\s+\d{1,2},\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})', item_text)
+                    found_date = normalize_date(date_match.group(1)) if date_match else "NA"
+                    
+                    current_priority = data.get('_date_priority', 0)
+                    
+                    if found_date != "NA" and item_priority >= current_priority:
+                        data['Signed Date'] = found_date
+                        data['_date_priority'] = item_priority
+                        
+                        team_match = re.search(r'(?:to|with|at|commits to)\s+([A-Z][^,.]+)', item_text)
+                        if team_match:
+                            data['Signed Team'] = clean_text(team_match.group(1))
 
-        for item in items:
-            item_text = clean_text(item.get_text())
-            
-            # --- DRAFT LOGIC ---
-            if 'draft' in item_text.lower():
-                # Date match (Jan 29, 2017 or 01/29/2017)
-                date_match = re.search(r'([A-Z][a-z]+\s+\d{1,2},\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})', item_text)
-                if date_match and data['Draft Date'] == "NA":
-                     data['Draft Date'] = normalize_date(date_match.group(1))
+            # --- PAGINATION LOGIC (Only applies to full timeline page) ---
+            if is_full_timeline:
+                # Look for "Next" button in pagination: <li class="next_itm"><a href="...">Next</a></li>
+                next_button = page.locator('li.next_itm a')
                 
-                # Team match
-                team_match = re.search(r'^([A-Za-z0-9\s]+?)\s+(?:select|picked|drafted)', item_text, re.IGNORECASE)
-                if team_match and data['Draft Team'] == "NA":
-                    data['Draft Team'] = clean_text(team_match.group(1))
-            
-            # --- SIGNED / ENROLLED / COMMITMENT LOGIC ---
-            # We prioritize Signed > Enrolled > Commitment
-            
-            status_priority = {'signed': 3, 'enrolled': 2, 'commit': 1, 'hard commit': 1, 'commitment': 1}
-            
-            # Determine priority of this specific item
-            item_priority = 0
-            if 'signed' in item_text.lower(): item_priority = 3
-            elif 'enrolled' in item_text.lower(): item_priority = 2
-            elif 'commitment' in item_text.lower() or 'hard commit' in item_text.lower(): item_priority = 1
-            
-            if item_priority > 0:
-                # Extract Date
-                date_match = re.search(r'([A-Z][a-z]+\s+\d{1,2},\s+\d{4}|\d{1,2}/\d{1,2}/\d{4})', item_text)
-                found_date = normalize_date(date_match.group(1)) if date_match else "NA"
-                
-                # UPDATE LOGIC:
-                # 1. If we have nothing yet ("NA"), take whatever we found.
-                # 2. If we found a "Signed" date (Priority 3), ALWAYS take it, even if we had "Enrolled" or "Commitment" before.
-                # 3. If we found "Commitment" (Priority 1), ONLY take it if we currently have "NA". Don't overwrite "Signed".
-                
-                should_update = False
-                
-                # Get current status from our internal debug tracker
-                current_status_str = data.get('_debug_status', 'None')
-                current_priority = 0
-                if current_status_str == 'Signed': current_priority = 3
-                elif current_status_str == 'Enrolled': current_priority = 2
-                elif current_status_str == 'Commitment': current_priority = 1
-                
-                if item_priority > current_priority:
-                    should_update = True
-                
-                if should_update and found_date != "NA":
-                    data['Signed Date'] = found_date
+                if await next_button.count() > 0 and await next_button.is_visible():
+                    # Check if we already found a commitment (Priority 3). 
+                    # If YES, we technically have what we want, but sometimes "De-commits" exist, 
+                    # so safer to keep going to find the FIRST commitment if users want that. 
+                    # But typically "Signed Date" is the LAST event. 
+                    # Since list is descending (Newest -> Oldest), Commitment (Oldest) is on the LAST page.
+                    # So we MUST keep going until the end.
                     
-                    # Set debug status so we know what quality of date we have
-                    if item_priority == 3: data['_debug_status'] = "Signed"
-                    elif item_priority == 2: data['_debug_status'] = "Enrolled"
-                    elif item_priority == 1: data['_debug_status'] = "Commitment"
-                    
-                    # Extract Team
-                    team_match = re.search(r'(?:to|with|at|commits to)\s+([A-Z][^,.]+)', item_text)
-                    if team_match:
-                        data['Signed Team'] = clean_text(team_match.group(1))
+                    # print(f"    ➡️  Navigating to timeline page {page_count + 2}...")
+                    await next_button.click()
+                    await page.wait_for_timeout(1500) # Wait for page load
+                    page_count += 1
+                else:
+                    break # No more pages
+            else:
+                break # Not on full timeline page, no pagination
 
     except Exception as e:
         pass 
@@ -266,7 +264,7 @@ async def parse_profile(page, url: str, year: int) -> dict:
     data['Recruiting Year'] = str(year)
     data['Scrape Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     data['Data Source'] = '247Sports Composite'
-    data['_debug_status'] = "None" # Initialize priority tracker
+    data['_date_priority'] = 0 
     
     try:
         await page.goto(url, wait_until='domcontentloaded', timeout=30000)
@@ -309,16 +307,16 @@ async def parse_profile(page, url: str, year: int) -> dict:
         if data['Class'] == "NA": data['Class'] = str(year)
         
         # --- 2. RANKINGS ---
-        sections = soup.select('section.rankings-section, div.ranking-section')
-        for section in sections:
-            title_elem = section.select_one('h3, h2, div.title')
-            if not title_elem: continue
-            title = clean_text(title_elem.get_text())
+        ranking_sections = soup.select('section.rankings')
+        for section in ranking_sections:
+            header = section.select_one('.rankings-header h3, .title')
+            if not header: continue
             
+            header_text = clean_text(header.get_text()).upper()
             prefix = None
-            if "Composite" in title or "247Sports Composite" in title:
+            if "COMPOSITE" in header_text:
                 prefix = "Composite"
-            elif "247Sports" in title and "Composite" not in title:
+            elif "247SPORTS" in header_text and "COMPOSITE" not in header_text:
                 prefix = "247"
             if not prefix: continue
             
@@ -330,35 +328,28 @@ async def parse_profile(page, url: str, year: int) -> dict:
                 rating_text = clean_text(rating_elem.get_text())
                 rating_match = re.search(r'(\d+(?:\.\d+)?)', rating_text)
                 if rating_match: data[f'{prefix} Rating'] = rating_match.group(1)
-            
-            rank_items = section.select('li')
-            for item in rank_items:
-                label_elem = item.select_one('b, strong, .label')
-                value_elem = item.select_one('strong, .value, a')
-                if not label_elem or not value_elem: continue
-                
-                label = clean_text(label_elem.get_text()).upper()
-                value = clean_text(value_elem.get_text())
-                
-                link_tag = item.select_one('a')
-                link_url = link_tag.get('href', '') if link_tag else ''
-                
-                if 'NATL' in label or 'NATIONAL' in label:
-                    data[f'{prefix} National Rank'] = parse_rank(value)
-                elif 'POS' in label or 'POSITION' in label:
-                    data[f'{prefix} Position Rank'] = parse_rank(value)
-                    if ':' in value:
-                         pos_match = re.search(r':\s*([A-Z]+)', value)
-                         if pos_match: data[f'{prefix} Position'] = pos_match.group(1)
-                    elif data['Position'] != "NA":
-                        data[f'{prefix} Position'] = data['Position']
 
-        # --- 3. TIMELINE (Initial Pass on Main Page) ---
-        # This will catch "Commitment" or "Signed" if visible immediately
+            ranks_list = section.select_one('ul.ranks-list')
+            if ranks_list:
+                for li in ranks_list.select('li'):
+                    a_tag = li.select_one('a')
+                    if not a_tag: continue
+                    href = a_tag.get('href', '')
+                    
+                    if 'Position=' in href:
+                        pos_node = a_tag.select_one('b')
+                        if pos_node: data[f'{prefix} Position'] = clean_text(pos_node.get_text())
+                        rank_node = a_tag.select_one('strong')
+                        if rank_node: data[f'{prefix} Position Rank'] = parse_rank(rank_node.get_text())
+                    
+                    elif 'InstitutionGroup=HighSchool' in href or 'Natl' in clean_text(li.get_text()):
+                         rank_node = a_tag.select_one('strong')
+                         if rank_node: data[f'{prefix} National Rank'] = parse_rank(rank_node.get_text())
+
+        # --- 3. TIMELINE (Initial Pass) ---
         await parse_timeline(page, data)
 
-        # --- 4. TIMELINE DEEP DIVE (Check for "See all" entries) ---
-        # Look for the footer link: <div class="timeline-footer"><a href="...">See all 31 entries</a></div>
+        # --- 4. TIMELINE DEEP DIVE (With Pagination) ---
         see_all_link = page.locator('.timeline-footer a')
         if await see_all_link.count() > 0:
             href = await see_all_link.first.get_attribute('href')
@@ -366,11 +357,11 @@ async def parse_profile(page, url: str, year: int) -> dict:
                 full_timeline_url = f"https://247sports.com{href}" if href.startswith('/') else href
                 try:
                     await page.goto(full_timeline_url, wait_until='domcontentloaded', timeout=15000)
-                    await parse_timeline(page, data) # Re-run parsing on the new list page
+                    await parse_timeline(page, data) 
                 except Exception as e:
                     pass
 
-        # Fallback for Signed Team (Commit Banner) if still missing
+        # Fallback for Signed Team
         if data['Signed Team'] == "NA":
             commit_banner = soup.select_one('.commit-banner, .commitment')
             if commit_banner:
@@ -401,8 +392,7 @@ async def scrape_player_batch(browser, urls: list, year: int, batch_num: int) ->
     valid_results = []
     for result in results:
         if isinstance(result, dict):
-            # Clean up internal debug fields before saving
-            if '_debug_status' in result: del result['_debug_status']
+            if '_date_priority' in result: del result['_date_priority']
             valid_results.append(result)
     return valid_results
 
