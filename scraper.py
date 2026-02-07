@@ -405,7 +405,9 @@ async def parse_profile(page, url: str, year: int) -> dict:
         await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
         await page.wait_for_timeout(2000)
         
-        see_all_link = page.locator('.timeline-footer a, a:has-text("See all"), a:has-text("See All")')
+        # Look specifically for TimelineEvents link (not videos!)
+        see_all_link = page.locator('a[href*="TimelineEvents"]')
+        print(f"    🔍 DEBUG: Found {await see_all_link.count()} TimelineEvents links")
         if await see_all_link.count() > 0:
             href = await see_all_link.first.get_attribute('href')
             if href:
