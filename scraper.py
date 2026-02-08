@@ -23,7 +23,7 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 # CONFIGURATION
 # =============================================================================
 
-YEARS = [2019]
+YEARS = [int(os.getenv('SCRAPE_YEAR', '2019'))]  # Set by workflow matrix
 OUTPUT_DIR = Path("output")
 TEST_MODE = os.getenv('TEST_MODE', 'false').lower() == 'true'
 MAX_CONCURRENT = 4
@@ -58,6 +58,20 @@ def extract_player_id(url: str) -> str:
 def clean_text(text: str) -> str:
     if not text: return "NA"
     return text.strip().replace('\n', ' ').replace('\r', '')
+
+def normalize_height(height_str: str) -> str:
+    """Normalize height to prevent Excel from converting to dates (6-3 → '6-3)"""
+    if not height_str or height_str == "NA": 
+        return "NA"
+    
+    # Remove any quotes already present
+    height_str = height_str.strip().strip("'\"")
+    
+    # If it looks like a height (contains - or '), add leading apostrophe for Excel
+    if '-' in height_str or "'" in height_str or (len(height_str) <= 4 and any(c.isdigit() for c in height_str)):
+        return f"'{height_str}"
+    
+    return height_str
 
 def parse_rank(text: str) -> str:
     if not text: return "NA"
@@ -177,9 +191,9 @@ async def click_load_more_until_complete(browser, year: int) -> list:
     player_urls = list(dict.fromkeys(player_urls))
     print(f"  ✓ Found {len(player_urls)} player profiles")
     
-    if TEST_MODE and len(player_urls) > 50:
-        player_urls = player_urls[:50]
-        print(f"  ℹ️  TEST MODE: Limited to 50 players")
+    if TEST_MODE and len(player_urls) > 300:
+        player_urls = player_urls[:300]
+        print(f"  ℹ️  TEST MODE: Limited to 300 players")
     
     await context.close()
     return player_urls
@@ -228,7 +242,11 @@ async def parse_timeline(page, data, year, do_deep_dive: bool):
                 # Extract team name, excluding the word "Draft" itself
                 team_match = re.search(r'(?:Draft[:\s]+)?([A-Z][A-Za-z0-9\s\.]+?)\s+(?:select|pick)', item_text, re.IGNORECASE)
                 if team_match and data['Draft Team'] == "NA":
-                    data['Draft Team'] = clean_text(team_match.group(1))
+                    team_name = clean_text(team_match.group(1))
+                    # Strip 'Draft' prefix if it got captured
+                    team_name = re.sub(r'^Draft\s*', '', team_name, flags=re.IGNORECASE).strip()
+                    if team_name and team_name.lower() not in ['draft']:
+                        data['Draft Team'] = team_name
             
             # --- COMMITMENT from abbreviated timeline ---
             item_priority = 0
@@ -351,7 +369,7 @@ async def parse_profile(page, url: str, year: int, player_num: int, total: int) 
                 if match: data['Position'] = clean_text(match.group(1))
             elif 'Height' in text:
                 match = re.search(r'Height[:\s]*(.*)', text, re.IGNORECASE)
-                if match: data['Height'] = clean_text(match.group(1))
+                if match: data['Height'] = normalize_height(match.group(1))
             elif 'Weight' in text:
                 match = re.search(r'Weight[:\s]*(.*)', text, re.IGNORECASE)
                 if match: data['Weight'] = clean_text(match.group(1))
@@ -399,7 +417,9 @@ async def parse_profile(page, url: str, year: int, player_num: int, total: int) 
                     
                     if link_tag:
                         href = link_tag.get('href', '')
+                        li_text = clean_text(li.get_text())
                         
+                        # Position Rank (has Position= in URL)
                         if 'Position=' in href:
                             if pos_node: 
                                 data[f'{prefix} Position'] = clean_text(pos_node.get_text())
@@ -408,7 +428,12 @@ async def parse_profile(page, url: str, year: int, player_num: int, total: int) 
                             if rank_node: 
                                 data[f'{prefix} Position Rank'] = parse_rank(rank_node.get_text())
                         
-                        elif 'InstitutionGroup=HighSchool' in href or 'Natl' in clean_text(li.get_text()):
+                        # Skip State Ranks explicitly (has both InstitutionGroup AND State parameter)
+                        elif 'State=' in href or 'state=' in href:
+                            continue  # Skip state ranks entirely
+                        
+                        # National Rank (has InstitutionGroup=HighSchool but NO State parameter)
+                        elif 'InstitutionGroup=HighSchool' in href:
                              rank_node = link_tag.select_one('strong')
                              if rank_node: 
                                  data[f'{prefix} National Rank'] = parse_rank(rank_node.get_text())
